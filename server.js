@@ -146,6 +146,7 @@ const publicLibFiles = new Set([
   "lib/katex.min.js",
   "lib/chart.umd.min.js",
   "lib/interaction-policy.js",
+  "lib/active-time-policy.js",
   "lib/quiz-question-order.js"
 ]);
 const publicResourceExtensions = new Set([

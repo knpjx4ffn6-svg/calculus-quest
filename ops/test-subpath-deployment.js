@@ -172,6 +172,7 @@ async function main() {
       "/calculus_quest/app/flow-test/flow-test.css",
       "/calculus_quest/lib/chart.umd.min.js",
       "/calculus_quest/lib/interaction-policy.js",
+      "/calculus_quest/lib/active-time-policy.js",
       "/calculus_quest/data/multi-scene-learning-route.json",
       "/calculus_quest/api/course/multi-scene-learning-route",
       "/calculus_quest/api/course/openmaic-v14-route"

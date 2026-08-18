@@ -1079,13 +1079,17 @@ async function loadUserDetail(userId, options = {}) {
     const research = detail.researchSummary || {};
     const environment = research.latestEnvironment || {};
     const quizOverall = detail.quizOverall || {};
+    const activeTimeIdleMinutes = Math.max(1, Math.round(Number(research.activeTimeIdleTimeoutMs || 300000) / 60000));
+    const excludedIdleText = research.excludedIdleSeconds
+      ? `已剔除 ${durationText(research.excludedIdleSeconds)} 空闲噪声`
+      : `连续 ${activeTimeIdleMinutes} 分钟无操作即停止计时`;
     document.getElementById("user-research-metrics").innerHTML = `
       <div class="metric-card highlight"><div class="label">测验提交</div><div class="value">${quizOverall.submissions || 0}</div><div class="sub">${quizOverall.questions || 0} 条逐题记录 · ${quizOverall.generationCount || 0} 个学习代次</div></div>
       <div class="metric-card"><div class="label">总体正确率</div><div class="value">${quizOverall.accuracy || 0}%</div><div class="sub">${quizOverall.correct || 0} 对 · ${quizOverall.incorrect || 0} 错 · ${quizOverall.pending || 0} 待复核</div></div>
       <div class="metric-card"><div class="label">累计得分</div><div class="value small">${quizOverall.totalScore || 0} / ${quizOverall.totalMaxScore || 0}</div><div class="sub">得分率 ${quizOverall.scoreRate || 0}%</div></div>
       <div class="metric-card good"><div class="label">有效学习停留</div><div class="value small">${durationText(research.unitStudySeconds || 0)}</div><div class="sub">${research.unitsVisited || 0} 个学习模块</div></div>
       <div class="metric-card"><div class="label">活跃天数</div><div class="value">${research.activeDays || 0}</div><div class="sub">${research.sessions || 0} 个浏览器学习会话</div></div>
-      <div class="metric-card"><div class="label">估算在线</div><div class="value small">${durationText(research.estimatedOnlineSeconds || 0)}</div><div class="sub">由在线时段事件累计</div></div>
+      <div class="metric-card"><div class="label">有效在线（估算）</div><div class="value small">${durationText(research.estimatedOnlineSeconds || 0)}</div><div class="sub">${excludedIdleText}</div></div>
       <div class="metric-card"><div class="label">课件动作</div><div class="value">${research.coursewareActions || 0}</div><div class="sub">点击、拖拽、调参、输入与滚动</div></div>
       <div class="metric-card warn"><div class="label">反馈</div><div class="value">${research.feedbackCount || 0}</div><div class="sub">学生主动提交的问题与建议</div></div>
     `;
@@ -1097,6 +1101,8 @@ async function loadUserDetail(userId, options = {}) {
         <div><dt>完成 / 重复访问</dt><dd>${research.completedUnits || 0} / ${research.repeatVisits || 0}</dd></div>
         <div><dt>原始 / 有效停留</dt><dd>${durationText(research.rawUnitStudySeconds || 0)} / ${durationText(research.unitStudySeconds || 0)}</dd></div>
         <div><dt>30 分钟截尾片段</dt><dd>${research.cappedStudySegments || 0}</dd></div>
+        <div><dt>原始 / 有效在线</dt><dd>${durationText(research.rawEstimatedOnlineSeconds || 0)} / ${durationText(research.estimatedOnlineSeconds || 0)}</dd></div>
+        <div><dt>空闲剔除片段</dt><dd>${research.idleExcludedSegments || 0}（${activeTimeIdleMinutes} 分钟阈值）</dd></div>
         <div><dt>智能教练决策</dt><dd>${research.agentDecisionCount || 0}</dd></div>
         <div><dt>注册时间</dt><dd>${esc(shortDateTime(detail.user.created_at))}</dd></div>
         <div><dt>最近设备</dt><dd>${esc(environment.deviceType || "尚未记录")}</dd></div>
@@ -2380,7 +2386,8 @@ function humanInteractionSummary(row) {
     return `学习会话开始${device}。`;
   }
   if (type === "session_end") {
-    return `学习会话结束，本次页面打开约 ${durationText(data.pageOpenSeconds || 0)}。`;
+    const idleRule = data.idleTimeoutMs ? `，连续 ${Math.max(1, Math.round(Number(data.idleTimeoutMs) / 60000))} 分钟无操作后停止计时` : "";
+    return `学习会话结束，本次有效活动约 ${durationText(data.pageOpenSeconds || 0)}${idleRule}。`;
   }
   if (type === "click") {
     if (data.view) return `点击了「${data.text || viewName(data.view)}」，准备切换到${viewName(data.view)}。`;
@@ -2463,9 +2470,10 @@ function humanInteractionSummary(row) {
       ? `（${shortDateTime(data.startedAt)} - ${shortDateTime(data.endedAt)}）`
       : "";
     const estimated = data.estimated ? "约 " : "";
+    const effective = data.effective ? "有效 " : "";
     const merged = data.count ? `，合并 ${data.count} 条旧心跳` : "";
     const unit = data.unitId ? `，模块：${unitName(data.unitId)}` : "";
-    return `在线学习 ${estimated}${durationText(data.seconds)}${range}，页面：${viewName(data.view)}${unit}${merged}。`;
+    return `${effective}在线学习 ${estimated}${durationText(data.seconds)}${range}，页面：${viewName(data.view)}${unit}${merged}。`;
   }
   if (type === "quiz_render") {
     return `打开测验「${moduleName(payload.unitId || data.unitId, payload.unitLabel || data.unitLabel || "")}」。`;

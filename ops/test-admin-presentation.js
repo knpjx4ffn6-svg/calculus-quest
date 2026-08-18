@@ -132,7 +132,7 @@ assert.match(adminHtml, /id="select-all-regrade"/);
 assert.match(adminHtml, /全选全部候选/);
 assert.match(adminHtml, /id="export-regrade-audits-csv"/);
 assert.match(adminHtml, /id="table-regrade-candidates"/);
-assert.match(adminHtml, /admin\/admin\.js\?v=20260814-admin-regrade-v4/);
+assert.match(adminHtml, /admin\/admin\.js\?v=20260818-active-time-v1/);
 assert.doesNotMatch(adminHtml, /id="table-phase-comparison"/);
 assert.match(adminSource, /function phaseCsvRows/);
 assert.match(adminSource, /function pathCsvRows/);

@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const initSqlJs = require("sql.js");
 const interactionPolicy = require("./lib/interaction-policy");
+const activeTimePolicy = require("./lib/active-time-policy");
 
 const WORKSPACE_ROOT = path.resolve(process.cwd());
 const configuredDbPath = String(process.env.DB_PATH || "").trim();
@@ -2551,7 +2552,6 @@ function researchSummaryForUser(eventRows, feedbackCount, agentDecisionCount) {
       completedUnits.add(unitId);
     }
     if (eventType === "repeat_unit_enter") repeatVisits += 1;
-    if (eventType === "online_period") estimatedOnlineSeconds += Math.max(0, Number(data.seconds || 0));
     if (
       payload.source === "iframe"
       || payload.source === "courseware_semantic"
@@ -2568,6 +2568,8 @@ function researchSummaryForUser(eventRows, feedbackCount, agentDecisionCount) {
       latestEnvironmentAt = row.created_at;
     }
   });
+  const onlineTime = activeTimePolicy.summarizeOnlinePeriods(eventRows);
+  estimatedOnlineSeconds = onlineTime.effectiveSeconds;
   const durationSamples = effectiveUnitDurationSamples(
     eventRows
       .filter((row) => row.type === "interaction")
@@ -2597,6 +2599,10 @@ function researchSummaryForUser(eventRows, feedbackCount, agentDecisionCount) {
     repeatVisits,
     coursewareActions,
     estimatedOnlineSeconds,
+    rawEstimatedOnlineSeconds: onlineTime.rawTotalSeconds,
+    excludedIdleSeconds: onlineTime.excludedIdleSeconds,
+    idleExcludedSegments: onlineTime.idleExcludedSegments,
+    activeTimeIdleTimeoutMs: onlineTime.idleTimeoutMs,
     unitStudySeconds,
     rawUnitStudySeconds,
     cappedStudySegments,

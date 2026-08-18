@@ -76,6 +76,7 @@ async function main() {
       "/lib/katex.min.js",
       "/lib/chart.umd.min.js",
       "/lib/interaction-policy.js",
+      "/lib/active-time-policy.js",
       "/data/multi-scene-learning-route.json",
       "/data/knowledge-graph.json",
       "/api/course/multi-scene-learning-route"
