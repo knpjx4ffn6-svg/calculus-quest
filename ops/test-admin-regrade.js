@@ -46,11 +46,29 @@ async function main() {
       question_id: "failure-question",
       created_at: "2026-08-13T10:03:00.000+08:00"
     });
+    db.insertQuizResult({
+      ...baseRow,
+      id: "regrade-missing-ai-score",
+      question_id: "missing-ai-score-question",
+      created_at: "2026-08-13T10:04:00.000+08:00"
+    });
+    db.insertQuizResult({
+      ...baseRow,
+      id: "regrade-low-confidence",
+      question_id: "low-confidence-question",
+      created_at: "2026-08-13T10:05:00.000+08:00"
+    });
     db.getDbSync().run(
       `UPDATE quiz_results
        SET ai_score = 0, ai_error_type = 'api_error',
            ai_feedback = '评分出错：旧接口失败。已先按 0 分计入，不影响继续学习。'
        WHERE id IN ('regrade-success', 'regrade-neighbour', 'regrade-failure')`
+    );
+    db.getDbSync().run(
+      `UPDATE quiz_results
+       SET ai_score = 0, ai_confidence = 0.4, ai_error_type = 'none',
+           ai_feedback = '模型评分置信度不足，建议复核。'
+       WHERE id = 'regrade-low-confidence'`
     );
 
     const courseAssessment = {
@@ -142,6 +160,16 @@ async function main() {
     assert.equal(candidates.rows.some((row) => row.id === "regrade-success"), false);
     assert.equal(candidates.rows.some((row) => row.id === "regrade-failure"), true);
     assert.equal(candidates.rows.some((row) => row.id === "regrade-neighbour"), true);
+    assert.equal(candidates.rows.some((row) => row.id === "regrade-missing-ai-score"), true);
+    assert.equal(candidates.rows.some((row) => row.id === "regrade-low-confidence"), true);
+    assert.equal(
+      candidates.rows.find((row) => row.id === "regrade-missing-ai-score")?.failure_reason,
+      "missing_ai_score"
+    );
+    assert.equal(
+      candidates.rows.find((row) => row.id === "regrade-low-confidence")?.failure_reason,
+      "low_confidence"
+    );
 
     const audits = db.gradingRegradeAudits({ limit: 20 });
     const appliedAudit = audits.find((row) => row.quiz_result_id === "regrade-success");

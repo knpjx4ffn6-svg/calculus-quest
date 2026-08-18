@@ -27,6 +27,7 @@ const LEGACY_AI_REVIEW_FAILURE_PATTERNS = [
   "未启用真实大模型",
   "已先按 0 分计入"
 ];
+const AI_REVIEW_CONFIDENCE_THRESHOLD = 0.7;
 const EFFECTIVE_PATH_MIN_SECONDS = 10;
 const EFFECTIVE_PATH_MAX_SECONDS = 30 * 60;
 
@@ -1570,10 +1571,19 @@ function failedAiReviewWhere(alias = "qr") {
       ${prefix}status = 'pending_review'
       OR ${prefix}is_correct = -1
       OR lower(trim(COALESCE(${prefix}ai_error_type, ''))) IN (${typePlaceholders})
+      OR ${prefix}ai_score IS NULL
+      OR (
+        ${prefix}ai_score IS NOT NULL
+        AND (
+          ${prefix}ai_confidence IS NULL
+          OR ${prefix}ai_confidence < ?
+        )
+      )
       OR ${feedbackClauses}
     )`,
     params: [
       ...FAILED_AI_REVIEW_TYPES,
+      AI_REVIEW_CONFIDENCE_THRESHOLD,
       ...LEGACY_AI_REVIEW_FAILURE_PATTERNS.map((pattern) => `%${pattern}%`)
     ]
   };
@@ -1583,6 +1593,13 @@ function gradingFailureReason(row = {}) {
   const errorType = String(row.ai_error_type || "").trim().toLowerCase();
   if (FAILED_AI_REVIEW_TYPES.includes(errorType)) return errorType;
   if (row.status === "pending_review" || Number(row.is_correct) === -1) return "pending_review";
+  if (row.ai_score == null) return "missing_ai_score";
+  if (
+    row.ai_confidence == null
+    || Number(row.ai_confidence) < AI_REVIEW_CONFIDENCE_THRESHOLD
+  ) {
+    return "low_confidence";
+  }
   if (LEGACY_AI_REVIEW_FAILURE_PATTERNS.some((pattern) => String(row.ai_feedback || "").includes(pattern))) {
     return "legacy_failure";
   }
@@ -1621,10 +1638,14 @@ function shortAnswerRegradeCandidates(options = {}) {
   const errorTypes = queryAll(
     `SELECT
        CASE
-         WHEN lower(trim(COALESCE(qr.ai_error_type, ''))) <> ''
+         WHEN lower(trim(COALESCE(qr.ai_error_type, ''))) IN (${FAILED_AI_REVIEW_TYPES.map(() => "?").join(", ")})
            THEN lower(trim(qr.ai_error_type))
          WHEN qr.status = 'pending_review' OR qr.is_correct = -1
            THEN 'pending_review'
+         WHEN qr.ai_score IS NULL
+           THEN 'missing_ai_score'
+         WHEN qr.ai_confidence IS NULL OR qr.ai_confidence < ?
+           THEN 'low_confidence'
          ELSE 'legacy_failure'
        END AS error_type,
        COUNT(*) AS count
@@ -1633,7 +1654,7 @@ function shortAnswerRegradeCandidates(options = {}) {
        AND ${failed.clause}${idClause}
      GROUP BY error_type
      ORDER BY count DESC, error_type ASC`,
-    baseParams
+    [...FAILED_AI_REVIEW_TYPES, AI_REVIEW_CONFIDENCE_THRESHOLD, ...baseParams]
   );
   return { rows, total, limit, offset, errorTypes };
 }

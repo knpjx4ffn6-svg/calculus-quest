@@ -213,9 +213,14 @@ async function main() {
     );
     assert.equal(preview.response.status, 200);
     assert.equal(preview.payload.ok, true);
-    assert.equal(preview.payload.data.total, 7);
+    assert.equal(preview.payload.data.total, 8);
     assert.equal(preview.payload.data.runtime.model, "auto");
     assert.equal(preview.payload.data.runtime.liveConfigured, true);
+    const missingAiScoreCandidate = preview.payload.data.rows.find(
+      (row) => row.id === currentGenerationNeighbourId
+    );
+    assert.ok(missingAiScoreCandidate);
+    assert.equal(missingAiScoreCandidate.failure_reason, "missing_ai_score");
 
     const beforeOverview = await adminRequest(
       baseUrl,
@@ -418,8 +423,11 @@ async function main() {
       adminToken,
       "/api/admin/grading/regrade-candidates?limit=10"
     );
-    assert.equal(secondPreview.payload.data.total, 1);
-    assert.equal(secondPreview.payload.data.rows[0].id, "api-regrade-failure");
+    assert.equal(secondPreview.payload.data.total, 2);
+    assert.deepEqual(
+      new Set(secondPreview.payload.data.rows.map((row) => row.id)),
+      new Set(["api-regrade-failure", currentGenerationNeighbourId])
+    );
 
     console.log("admin grading regrade API tests passed");
   } finally {

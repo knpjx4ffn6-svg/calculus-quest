@@ -139,16 +139,28 @@ async function seedDatabase(dbPath) {
         max_score: Number(shortEntry.question.points || 20),
         created_at: createdAt
       });
-      db.getDbSync().run(
-        `UPDATE quiz_results
-         SET ai_score = 0, ai_error_type = 'api_error',
-             ai_feedback = ?
-         WHERE id = ?`,
-        [
-          `旧评分接口返回错误，保留原始评分等待重评。${"这是较长的诊断反馈。".repeat(12)}`,
-          resultId
-        ]
-      );
+      if (resultId === "layout-short-5-3") {
+        // Keep one historical row without AI grading metadata.
+      } else if (resultId === "layout-short-5-4") {
+        db.getDbSync().run(
+          `UPDATE quiz_results
+           SET ai_score = 0, ai_confidence = 0.4, ai_error_type = 'none',
+               ai_feedback = '评分结果置信度不足，等待重新评分。'
+           WHERE id = ?`,
+          [resultId]
+        );
+      } else {
+        db.getDbSync().run(
+          `UPDATE quiz_results
+           SET ai_score = 0, ai_error_type = 'api_error',
+               ai_feedback = ?
+           WHERE id = ?`,
+          [
+            `旧评分接口返回错误，保留原始评分等待重评。${"这是较长的诊断反馈。".repeat(12)}`,
+            resultId
+          ]
+        );
+      }
     }
 
     for (let unitIndex = 0; unitIndex < 14; unitIndex += 1) {
@@ -277,6 +289,14 @@ async function main() {
     await page.locator("#app:not(.hidden)").waitFor({ timeout: 30000 });
     await page.locator('[data-tab="shortanswers"]').click();
     await page.locator("#table-regrade-candidates tbody tr").nth(20).waitFor({ timeout: 30000 });
+    assert.equal(
+      await page.locator("#table-regrade-candidates .badge").filter({ hasText: "缺失评分" }).count(),
+      1
+    );
+    assert.equal(
+      await page.locator("#table-regrade-candidates .badge").filter({ hasText: "低置信度" }).count(),
+      1
+    );
     await page.locator("#select-all-regrade").check();
     assert.equal(
       await page.locator("[data-regrade-id]:checked").count(),

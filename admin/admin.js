@@ -1406,7 +1406,8 @@ function renderActivityTab(hourlyData) {
 // ---- Short Answer Responses ----
 function shortAnswerReviewState(row = {}) {
   const aiScore = row.ai_score == null ? null : Number(row.ai_score);
-  const aiErrorType = row.ai_error_type || "";
+  const aiConfidence = row.ai_confidence == null ? null : Number(row.ai_confidence);
+  const aiErrorType = String(row.ai_error_type || "").trim().toLowerCase();
   const aiFeedback = row.ai_feedback || "";
   const aiFailed = [
     "api_error",
@@ -1418,9 +1419,11 @@ function shortAnswerReviewState(row = {}) {
     "unknown"
   ].includes(aiErrorType)
     || /解析失败|评分超时|人工评阅|人工复核|已先按 0 分计入/.test(aiFeedback);
-  if (aiScore === null) return { label: "待复核", badgeClass: "badge-amber", kind: "pending" };
+  const lowConfidence = aiScore !== null && (aiConfidence === null || aiConfidence < 0.7);
+  if (aiScore === null || lowConfidence || aiFailed) {
+    return { label: "待复核", badgeClass: "badge-amber", kind: "pending" };
+  }
   if (aiScore > 0) return { label: `已审核 ${aiScore} 分`, badgeClass: "badge-blue", kind: "reviewed" };
-  if (aiFailed) return { label: "待复核", badgeClass: "badge-amber", kind: "pending" };
   return { label: "错误", badgeClass: "badge-red", kind: "incorrect" };
 }
 
@@ -1473,6 +1476,8 @@ function regradeFailureLabel(value = "") {
     mock_provider: "模拟模型",
     manual_fallback: "人工回退",
     pending_review: "待批改",
+    missing_ai_score: "缺失评分",
+    low_confidence: "低置信度",
     legacy_failure: "旧版失败",
     unknown: "未知错误"
   })[String(value || "").trim().toLowerCase()] || "待复核";
