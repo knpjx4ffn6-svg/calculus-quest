@@ -13,7 +13,7 @@
     "browser:smoke:test": "node ops/test-platform-browser-smoke.js && node ops/test-admin-layout-browser.js",
     "quiz:test": "node ops/test-quiz-coverage.js",
     "path:test": "node ops/test-agentic-navigation.js",
-    "grading:test": "node ops/test-llm-response-text.js && node ops/test-short-answer-recovery.js && node ops/test-admin-regrade.js && node ops/test-admin-regrade-api.js",
+    "grading:test": "node ops/test-llm-response-text.js && node ops/test-short-answer-recovery.js && node ops/test-admin-regrade.js && node ops/test-admin-regrade-api.js && node ops/test-legacy-main-regrade-api.js",
     "scene:test": "node ops/test-scene-recommender.js && node ops/test-knowledge-scene-selection.js && node ops/test-scene-recommendation-ui.js",
     "assistant:test": "node ops/test-courseware-context.js && node ops/test-learning-notes.js && node ops/test-learning-notes-api.js && node ops/test-proactive-learning.js && node ops/test-learning-assistant.js && node ops/test-learning-assistant-migration.js && node ops/test-assessment-agent-mode.js && node ops/test-llm-json-mode-retry.js && node ops/test-learning-assistant-api.js && node ops/test-knowledge-assistant-ui.js",
     "slide:test": "node ops/test-slide-rendering.js",
