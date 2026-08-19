@@ -6615,8 +6615,8 @@ body[data-cq-theme="A"] .hero-bg {
     linear-gradient(90deg, rgba(5, 16, 23, 0.94), rgba(7, 24, 34, 0.64) 48%, rgba(8, 25, 34, 0.18)),
     linear-gradient(rgba(85, 230, 193, 0.05) 1px, transparent 1px),
     linear-gradient(90deg, rgba(85, 230, 193, 0.05) 1px, transparent 1px),
-    url("assets/theme-star-orbit.jpg") center / cover no-repeat;
-  background-size: auto, 42px 42px, 42px 42px, cover;
+    #0a1b24;
+  background-size: auto, 42px 42px, 42px 42px;
   filter: saturate(0.86) contrast(1.08);
 }
 
@@ -6681,7 +6681,7 @@ body[data-cq-theme="C"] .hero {
 body[data-cq-theme="C"] .hero-bg {
   background:
     linear-gradient(90deg, rgba(23, 17, 38, 0.94), rgba(23, 17, 38, 0.48) 55%, rgba(23, 17, 38, 0.24)),
-    url("assets/theme-pulse.jpg") center / cover no-repeat;
+    #171126;
   filter: saturate(1.12) contrast(1.04);
 }
 
@@ -6744,7 +6744,7 @@ body[data-cq-theme="E"] .hero {
 body[data-cq-theme="E"] .hero-bg {
   background:
     linear-gradient(90deg, rgba(7, 19, 20, 0.92), rgba(9, 23, 22, 0.62) 48%, rgba(9, 23, 22, 0.18)),
-    url("assets/theme-open-world.jpg") center 52% / cover no-repeat;
+    #071314;
   filter: saturate(0.94) contrast(1.05);
 }
 
