@@ -3,6 +3,7 @@ const AGENTIC_PRE_SKIP_THRESHOLD = 0.8;
 const AGENTIC_POST_REMEDIATION_THRESHOLD = 0.6;
 const AGENTIC_ENABLE_EXTENSION = false;
 const AGENTIC_REMOTE_PLAN_TIMEOUT_MS = 2500;
+const AGENTIC_REMOTE_PLAN_REQUEST_TIMEOUT_MS = 12000;
 const AGENTIC_ALWAYS_RECOMMEND_EXTENSION_CHAPTERS = new Set(["V14-X2", "V14-X5"]);
 const AGENTIC_FINAL_MASTERY_EXTENSION_CHAPTERS = new Set(["V14-X3", "V14-X4"]);
 
@@ -394,6 +395,14 @@ function agenticDiscardUnavailableSceneSelections(path) {
   });
 }
 function ensureAgenticPath() {
+  const beforeEnsure = JSON.stringify({
+    agenticPath: state.agenticPath || null,
+    completed: state.completed || [],
+    submittedQuizzes: state.submittedQuizzes || [],
+    selectedKnowledgeScenes: state.selectedKnowledgeScenes || {},
+    currentChapterId,
+    currentUnitId
+  });
   if (!state.agenticPath) state.agenticPath = agenticDefaults();
   const defaults = agenticDefaults();
   Object.keys(defaults).forEach((key) => {
@@ -425,6 +434,15 @@ function ensureAgenticPath() {
   state.agenticPath.unlocked = Array.from(new Set([...(state.agenticPath.unlocked || []), firstUnitId, ...(state.completed || [])].filter(Boolean)));
   state.agenticPath.visibleUnits = Array.from(new Set([...(state.agenticPath.visibleUnits || []), firstUnitId, safeCurrentUnitId, ...(state.completed || [])].filter(Boolean)));
   agenticPruneLockedRoutePath(state.agenticPath);
+  const afterEnsure = JSON.stringify({
+    agenticPath: state.agenticPath,
+    completed: state.completed || [],
+    submittedQuizzes: state.submittedQuizzes || [],
+    selectedKnowledgeScenes: state.selectedKnowledgeScenes || {},
+    currentChapterId,
+    currentUnitId
+  });
+  if (beforeEnsure !== afterEnsure && typeof saveState === "function") saveState();
   return state.agenticPath;
 }
 
@@ -438,7 +456,71 @@ function agenticEvidenceUnitIds() {
   return ids;
 }
 
+function agenticLinearRecoveryBlocked(path, unitId = "") {
+  if (!path || !unitId) return false;
+  if (path.pendingPlan) return true;
+  if (path.reviewQueue?.queue?.length || path.reviewResume?.unitId) return true;
+  if (path.activeDetour?.unitId || path.oneStepExtension?.unitId) return true;
+  if (path.activeExtensionChapter?.chapterId) return true;
+  if (agenticUnitIsActivePathTarget(path, unitId)) return true;
+  return [
+    path.reviewQueue?.fromUnitId,
+    path.reviewResume?.fromUnitId,
+    path.activeDetour?.fromUnitId,
+    path.oneStepExtension?.fromUnitId,
+    path.activeExtensionChapter?.fromUnitId
+  ].includes(unitId);
+}
+
+function agenticNextIncompleteUnitInChapter(unit, path, completed) {
+  const chapter = getChapter(unit?.chapterId);
+  const units = [...agenticAllChapterUnits(unit?.chapterId)].sort(
+    (a, b) => (Number(a.sceneOrder) || 0) - (Number(b.sceneOrder) || 0)
+  );
+  const index = units.findIndex((candidate) => candidate.id === unit?.id);
+  if (index < 0) return null;
+
+  for (let offset = index + 1; offset < units.length; offset += 1) {
+    const candidate = units[offset];
+    if (!candidate?.id || completed.has(candidate.id)) continue;
+    if (path.skipped?.[candidate.id]) continue;
+    if (agenticLinearRecoveryBlocked(path, candidate.id)) return null;
+    return candidate;
+  }
+  return null;
+}
+
+function agenticRecoverSequentialProgressFromEvidence(path, completed, unlocked, visible) {
+  let changed = false;
+  (curriculum || []).forEach((chapter) => {
+    const units = [...agenticAllChapterUnits(chapter?.id)].sort(
+      (a, b) => (Number(a.sceneOrder) || 0) - (Number(b.sceneOrder) || 0)
+    );
+    // Recover one frontier per chapter. A later historical completion must
+    // not allow recovery to leap over an unfinished unit.
+    const anchor = units.find((unit) => completed.has(unit?.id));
+    if (!anchor || agenticLinearRecoveryBlocked(path, anchor.id)) return;
+    const next = agenticNextIncompleteUnitInChapter(anchor, path, completed);
+    if (!next) return;
+    if (!unlocked.has(next.id)) {
+      unlocked.add(next.id);
+      changed = true;
+    }
+    if (!visible.has(next.id)) {
+      visible.add(next.id);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
 function agenticReconcilePathWithEvidence(path) {
+  const before = JSON.stringify({
+    unlocked: path.unlocked || [],
+    visibleUnits: path.visibleUnits || [],
+    completed: state.completed || [],
+    submittedQuizzes: state.submittedQuizzes || []
+  });
   const unlocked = new Set(path.unlocked || []);
   const visible = new Set(path.visibleUnits || []);
   const completed = new Set(state.completed || []);
@@ -461,11 +543,15 @@ function agenticReconcilePathWithEvidence(path) {
       completed.add(unit.id);
     }
 
-    const chapter = getChapter(unit.chapterId);
-    (chapter?.units || [])
+    (agenticAllChapterUnits(unit.chapterId))
       .filter((candidate) => candidate.sceneOrder <= unit.sceneOrder)
       .forEach((candidate) => unlocked.add(candidate.id));
   });
+
+  // Older snapshots can contain completion evidence without the following
+  // unit's unlock record. Recover only the next unit in the same chapter;
+  // explicit skips, pending choices, review queues and chapter boundaries stay intact.
+  agenticRecoverSequentialProgressFromEvidence(path, completed, unlocked, visible);
 
   if (currentUnitId) visible.add(currentUnitId);
   if (path.oneStepExtension?.unitId) visible.add(path.oneStepExtension.unitId);
@@ -478,6 +564,12 @@ function agenticReconcilePathWithEvidence(path) {
   path.visibleUnits = Array.from(visible).filter((unitId) => findMainUnit(unitId) || agenticParseUnitId(unitId));
   state.completed = Array.from(completed);
   state.submittedQuizzes = Array.from(submitted);
+  return before !== JSON.stringify({
+    unlocked: path.unlocked,
+    visibleUnits: path.visibleUnits,
+    completed: state.completed,
+    submittedQuizzes: state.submittedQuizzes
+  });
 }
 
 function agenticRevealUnit(unitId) {
@@ -1357,18 +1449,122 @@ function agenticRenderLearningUpdate() {
   if (typeof renderAgenticCoachPanel === "function") renderAgenticCoachPanel();
 }
 
-async function agenticOpenUnit(unitId) {
-  if (!unitId) return;
-  const parsed = agenticParseUnitId(unitId);
-  if (parsed?.chapterId && !getChapter(parsed.chapterId)?.loaded) {
-    await ensureChapterLoaded(parsed.chapterId, { showLoading: true });
+function agenticNavigationSignal(eventType, data = {}) {
+  const payload = { source: "navigation", data: { ...data } };
+  if (typeof analyticsTrack === "function") analyticsTrack(eventType, payload);
+  if (typeof trackLearningEvent === "function") {
+    trackLearningEvent(eventType, { ...data }, false);
   }
-  const unit = getUnit(unitId);
-  const targetChapterId = unit?.chapterId || parsed?.chapterId;
-  if (targetChapterId && targetChapterId !== currentChapterId) {
-    await selectChapter(targetChapterId);
+}
+
+function agenticNavigationFailure(unitId, from, reason, startedAt, source = "agentic") {
+  const target = String(unitId || "");
+  const latencyMs = Math.max(0, Date.now() - Number(startedAt || Date.now()));
+  agenticNavigationSignal("navigation_failed", {
+    source,
+    fromChapterId: from.chapterId || "",
+    fromUnitId: from.unitId || "",
+    targetUnitId: target,
+    reason: String(reason || "unknown"),
+    latencyMs
+  });
+  addLog("下一节暂时没有打开成功，你的学习记录和选择已保留，请稍后重试。");
+  return false;
+}
+
+function agenticRestoreNavigationPosition(from = {}, previousReturnToQuiz = null, options = {}) {
+  currentChapterId = from.chapterId || "";
+  currentUnitId = from.unitId || "";
+  state.returnToQuiz = previousReturnToQuiz;
+  if (options.persist !== false && typeof saveState === "function") saveState();
+  if (options.render !== false && typeof renderAll === "function") renderAll();
+}
+
+async function agenticOpenUnit(unitId, options = {}) {
+  const targetId = String(unitId || "").trim();
+  const source = String(options.source || "agentic");
+  const startedAt = Date.now();
+  const from = { chapterId: currentChapterId || "", unitId: currentUnitId || "" };
+  const previousReturnToQuiz = state.returnToQuiz;
+  const restorePosition = () => agenticRestoreNavigationPosition(from, previousReturnToQuiz, {
+    persist: options.persistRestore !== false
+  });
+  if (!targetId) return agenticNavigationFailure(targetId, from, "empty_target", startedAt, source);
+
+  agenticNavigationSignal("navigation_attempt", {
+    source,
+    fromChapterId: from.chapterId,
+    fromUnitId: from.unitId,
+    targetUnitId: targetId
+  });
+
+  const parsed = agenticParseUnitId(targetId);
+  const exactChapter = (typeof curriculum !== "undefined" ? curriculum : [])
+    .find((chapter) => chapter?.id === parsed?.chapterId) || null;
+  if (parsed?.chapterId && !exactChapter) {
+    return agenticNavigationFailure(targetId, from, "chapter_not_found", startedAt, source);
   }
-  selectUnit(unitId);
+
+  try {
+    if (parsed?.chapterId && !exactChapter.loaded) {
+      const loaded = await ensureChapterLoaded(parsed.chapterId, { showLoading: true });
+      if (loaded === false) {
+        restorePosition();
+        return agenticNavigationFailure(targetId, from, "chapter_load_rejected", startedAt, source);
+      }
+    }
+  } catch (error) {
+    restorePosition();
+    return agenticNavigationFailure(targetId, from, "chapter_load_failed", startedAt, source);
+  }
+
+  const unit = getUnit(targetId);
+  const targetChapterId = unit?.chapterId || parsed?.chapterId || "";
+  if (!unit || !targetChapterId) {
+    restorePosition();
+    return agenticNavigationFailure(targetId, from, "unit_not_found", startedAt, source);
+  }
+
+  try {
+    if (targetId === currentUnitId && targetChapterId === currentChapterId) {
+      agenticNavigationSignal("navigation_success", {
+        source,
+        fromChapterId: from.chapterId,
+        fromUnitId: from.unitId,
+        targetUnitId: targetId,
+        latencyMs: Math.max(0, Date.now() - startedAt),
+        noOp: true
+      });
+      return true;
+    }
+
+    if (targetChapterId !== currentChapterId) {
+      const chapterSelected = await selectChapter(targetChapterId);
+      if (chapterSelected === false) {
+        restorePosition();
+        return agenticNavigationFailure(targetId, from, "chapter_selection_rejected", startedAt, source);
+      }
+    }
+
+    const unitSelected = selectUnit(targetId);
+    if (unitSelected === false || currentUnitId !== targetId) {
+      restorePosition();
+      return agenticNavigationFailure(targetId, from, "unit_selection_rejected", startedAt, source);
+    }
+
+    agenticNavigationSignal("navigation_success", {
+      source,
+      fromChapterId: from.chapterId,
+      fromUnitId: from.unitId,
+      targetChapterId,
+      targetUnitId: targetId,
+      latencyMs: Math.max(0, Date.now() - startedAt)
+    });
+    return true;
+  } catch (error) {
+    restorePosition();
+    return agenticNavigationFailure(targetId, from, error?.code || "navigation_exception", startedAt, source);
+  }
 }
 
 function agenticCanLeaveCurrent() {
@@ -1871,7 +2067,7 @@ async function agenticRequestPlan(unit, records = []) {
         current: interactionEvidenceForUnit(unit.id),
         chapter: interactionEvidenceForChapter(unit.chapterId).slice(-30)
       }
-    });
+    }, { timeoutMs: AGENTIC_REMOTE_PLAN_REQUEST_TIMEOUT_MS });
     return payload;
   } catch (error) {
     console.warn("Agentic KG plan failed:", error);
@@ -1967,6 +2163,7 @@ async function agenticRecoverInterruptedGrading() {
     return true;
   } catch (error) {
     pending.narration = `评分状态已恢复，但学习建议生成失败：${error.message || "请稍后重试"}。`;
+    pending.gradingRecoveryAvailable = true;
     return false;
   } finally {
     path.decisionInFlight = "";
@@ -1997,7 +2194,7 @@ async function agenticResolvePendingGrading(action = "retry") {
         unitId: unit.id,
         fallbackToZero: action === "continue",
         questions: agenticQuizQuestionsForPlan(records, unit)
-      });
+      }, { timeoutMs: AGENTIC_REMOTE_PLAN_REQUEST_TIMEOUT_MS });
     } catch (error) {
       if (action !== "continue") throw error;
       console.warn("Persisting short answer fallback failed:", error);
@@ -2018,6 +2215,7 @@ async function agenticResolvePendingGrading(action = "retry") {
 
     if (agenticQuizHasPendingShortAnswer(records)) {
       pending.narration = "批改仍未完成，系统会保留待复核状态，并在后续恢复时继续处理。";
+      pending.gradingRecoveryAvailable = true;
       addLog(`「${unit.label}」简答题重新批改未完成。`);
       return false;
     }
@@ -2031,6 +2229,7 @@ async function agenticResolvePendingGrading(action = "retry") {
     return true;
   } catch (error) {
     pending.narration = `批改暂时未完成：${error.message || "服务暂时不可用"}。系统会在后续恢复时继续处理。`;
+    pending.gradingRecoveryAvailable = true;
     addLog(`「${unit.label}」简答题重新批改失败：${error.message || "服务暂时不可用"}。`);
     return false;
   } finally {
@@ -2053,8 +2252,28 @@ function agenticBuildPendingGradingPlan(unit, records = [], options = {}) {
     plan: null,
     resumeUnitId: agenticNextMainUnitAfter(unit.id)?.id || "",
     actions: [],
+    gradingRecoveryAvailable: false,
     createdAt: beijingNow()
   };
+}
+
+function agenticMarkGradingRecoveryAvailable(unit, error = null) {
+  const path = ensureAgenticPath();
+  const pending = path.pendingPlan;
+  if (!unit?.id || pending?.phase !== "grading_pending" || pending.unitId !== unit.id) return false;
+  pending.gradingRecoveryAvailable = true;
+  pending.narration = "简答题评分暂时未完成。你可以重试评分，也可以先按 0 分继续学习；之后仍可人工复核。";
+  path.decisionInFlight = "";
+  if (error) console.warn("Agentic grading follow-up failed:", error);
+  if (typeof analyticsTrack === "function") {
+    analyticsTrack("grading_recovery_available", {
+      source: "quiz",
+      data: { unitId: unit.id, reason: error?.code || "follow_up_failed" }
+    });
+  }
+  saveState();
+  agenticRenderLearningUpdate();
+  return true;
 }
 
 function agenticSetPendingGrading(unit, records = [], options = {}) {
@@ -2847,6 +3066,8 @@ async function agenticApplyDecision(type, actionKey = "") {
   );
   if (!action) return;
   if (path.decisionInFlight) return;
+  const pathSnapshot = agenticClonePlan(path);
+  const selectedScenesSnapshot = agenticClonePlan(state.selectedKnowledgeScenes || {});
   path.decisionInFlight = action.actionKey || type;
   renderAgenticCoachPanel();
   let targetId = "";
@@ -3126,6 +3347,18 @@ async function agenticApplyDecision(type, actionKey = "") {
 
     decisionMeta = agenticDecisionMeta(pending, action, targetId);
 
+    if (targetId) {
+      const opened = await agenticOpenUnit(targetId, {
+        source: "agentic_decision",
+        persistRestore: false
+      });
+      if (!opened) {
+        const navigationError = new Error("当前选择已保留，请稍后重试。");
+        navigationError.code = "navigation_failed";
+        throw navigationError;
+      }
+    }
+
     agenticDecisionRecord(type, {
       ...decisionMeta,
       fromUnitId: pending.anchorUnitId || pending.unitId,
@@ -3153,20 +3386,26 @@ async function agenticApplyDecision(type, actionKey = "") {
     saveState();
     if (nextPendingPlan) {
       agenticRenderLearningUpdate();
-    } else if (targetId) {
-      await agenticOpenUnit(targetId);
     } else {
       agenticRenderLearningUpdate();
     }
   } catch (error) {
-    if (path.pendingPlan === pending) {
+    if (pathSnapshot) {
+      Object.keys(path).forEach((key) => delete path[key]);
+      Object.assign(path, pathSnapshot);
+    } else if (path.pendingPlan === pending) {
       path.deferredExtensionPlan = previousDeferredExtensionPlan;
       path.deferredReviewPlan = previousDeferredReviewPlan;
+    }
+    if (selectedScenesSnapshot) {
+      state.selectedKnowledgeScenes = selectedScenesSnapshot;
     }
     path.decisionInFlight = "";
     saveState();
     renderAgenticCoachPanel();
-    addLog(`学习路径切换失败：${error.message || "请重试"}`);
+    if (error?.code !== "navigation_failed") {
+      addLog(`学习路径切换失败：${error.message || "请重试"}`);
+    }
     throw error;
   }
 }
@@ -3476,14 +3715,20 @@ function renderAgenticCoachPanel() {
   if (pending.phase === "grading_pending") {
     const retrying = inFlight === "grading_retry";
     const continuing = inFlight === "grading_continue";
+    const recoveryAvailable = pending.gradingRecoveryAvailable === true;
     node.hidden = false;
     node.innerHTML = `
       <section class="agentic-coach-card grading-pending">
         <div class="agentic-coach-header">
-          <strong>${retrying ? "正在重新批改简答题" : continuing ? "正在生成学习建议" : "简答题正在批改"}</strong>
+          <strong>${retrying ? "正在重新批改简答题" : continuing ? "正在整理后续学习建议" : recoveryAvailable ? "简答题评分暂时未完成" : "简答题正在批改"}</strong>
         </div>
         <p>${escapeHtml(agenticStudentFacingText(pending.narration, "简答题批改完成后，我会再给出学习路径建议。"))}</p>
-        <small>系统会自动完成批改并更新学习建议，你无需进行选择。</small>
+        ${recoveryAvailable
+          ? `<div class="agentic-actions grading-recovery-actions">
+              <button class="button primary" type="button" data-agentic-grading-action="continue" ${inFlight ? "disabled" : ""}>${continuing ? "正在整理后续学习建议" : "先按 0 分继续学习"}</button>
+              <button class="button soft" type="button" data-agentic-grading-action="retry" ${inFlight ? "disabled" : ""}>${retrying ? "正在重新批改简答题" : "再试一次评分"}</button>
+            </div>`
+          : "<small>系统会自动完成批改并更新学习建议，你无需进行选择。</small>"}
       </section>
     `;
     return;

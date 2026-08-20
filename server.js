@@ -34,6 +34,7 @@ const kg = require("./lib/kg");
 const coach = require("./lib/agentic-coach");
 const orchestrator = require("./lib/agent-orchestrator");
 const gradingRegrade = require("./lib/grading-regrade");
+const quizSnapshotReconciliation = require("./lib/quiz-snapshot-reconciliation");
 const feedback = require("./lib/feedback");
 const systemAnnouncementApi = require("./lib/system-announcement-api");
 const root = process.cwd();
@@ -57,10 +58,15 @@ let learningRoute = null;
 let publicLearningRouteJson = "";
 let flowTestRouteJson = "";
 let assessmentIndex = new Map();
+let courseAssessmentFingerprint = "";
 let assistantContextIndex = { routeVersion: "", units: new Map(), questions: new Map() };
 try {
   learningRoute = JSON.parse(fs.readFileSync(learningRoutePath, "utf8"));
-  publicLearningRouteJson = JSON.stringify(courseAssessment.buildPublicLearningRoute(learningRoute));
+  courseAssessmentFingerprint = courseAssessment.assessmentFingerprint(learningRoute);
+  publicLearningRouteJson = JSON.stringify({
+    ...courseAssessment.buildPublicLearningRoute(learningRoute),
+    courseAssessmentFingerprint
+  });
   flowTestRouteJson = JSON.stringify(learningRoute);
   assessmentIndex = courseAssessment.buildAssessmentIndex(learningRoute);
   assistantContextIndex = learningAssistant.buildCourseContextIndex(learningRoute);
@@ -767,6 +773,57 @@ function persistGradingResults(participant, results = []) {
   });
 }
 
+function parseSnapshotDataValue(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function reconcileSnapshotQuizResults(userId, snapshot, learningGeneration, fallbackCreatedAt = "") {
+  const records = quizSnapshotReconciliation.buildReconciledQuizResults({
+    snapshot: parseSnapshotDataValue(snapshot),
+    userId,
+    learningGeneration,
+    fallbackCreatedAt,
+    assessmentIndex,
+    courseAssessment,
+    assessmentFingerprint: courseAssessmentFingerprint
+  });
+  return db.reconcileQuizResults(records);
+}
+
+function reconcileStoredSnapshotQuizResults() {
+  const totals = { users: 0, snapshots: 0, inserted: 0, updated: 0, skipped: 0 };
+  db.listUsers().forEach((user) => {
+    totals.users += 1;
+    try {
+      const snapshots = db.listLearningSnapshots(user.id);
+      snapshots.forEach((snapshot) => {
+        totals.snapshots += 1;
+        // Generation 0 is the pre-versioning legacy snapshot format.  It
+        // belongs to the first learning generation, not to a later reset.
+        const generation = Number(snapshot.generation) > 0 ? Number(snapshot.generation) : 1;
+        const result = reconcileSnapshotQuizResults(
+          user.id,
+          snapshot.data,
+          generation,
+          snapshot.created_at
+        );
+        totals.inserted += result.inserted;
+        totals.updated += result.updated;
+        totals.skipped += result.skipped;
+      });
+    } catch (error) {
+      console.error(`Stored snapshot quiz reconciliation skipped for ${user.id}:`, error.message);
+    }
+  });
+  return totals;
+}
+
 function gradingRuntimeInfo() {
   const provider = String(
     process.env.GRADING_LLM_PROVIDER
@@ -1469,7 +1526,10 @@ async function handleApi(req, res, url) {
 
     if (req.method === "GET" && url.pathname === "/api/research/config") {
       const courseVersion = String(learningRoute?.versionId || "").slice(0, 120);
-      sendJson(res, 200, { ok: true, data: { ...researchConfig, courseVersion } });
+      sendJson(res, 200, {
+        ok: true,
+        data: { ...researchConfig, courseVersion, courseAssessmentFingerprint }
+      });
       return;
     }
 
@@ -1917,11 +1977,23 @@ async function handleApi(req, res, url) {
       }
 
       db.upsertUser(auth.participant.id, auth.participant.nickname, auth.participant.created_at, timestamp);
+      let quizReconciliation = { inserted: 0, updated: 0, skipped: 0, total: 0 };
+      try {
+        quizReconciliation = reconcileSnapshotQuizResults(
+          auth.participant.id,
+          result.data,
+          result.generation,
+          timestamp
+        );
+      } catch (error) {
+        console.error("Learning snapshot quiz reconciliation failed:", error.message);
+      }
       sendJson(res, 200, {
         ok: true,
         snapshotId,
         generation: result.generation,
-        revision: result.revision
+        revision: result.revision,
+        quizReconciliation
       });
       return;
     }
@@ -1959,13 +2031,25 @@ async function handleApi(req, res, url) {
         return;
       }
       db.upsertUser(auth.participant.id, auth.participant.nickname, auth.participant.created_at, timestamp);
+      let quizReconciliation = { inserted: 0, updated: 0, skipped: 0, total: 0 };
+      try {
+        quizReconciliation = reconcileSnapshotQuizResults(
+          auth.participant.id,
+          snapshotData,
+          result.generation,
+          timestamp
+        );
+      } catch (error) {
+        console.error("Learning reset quiz reconciliation failed:", error.message);
+      }
 
       sendJson(res, 200, {
         ok: true,
         snapshotId,
         cleared: true,
         generation: result.generation,
-        revision: result.revision
+        revision: result.revision,
+        quizReconciliation
       });
       return;
     }
@@ -3811,6 +3895,18 @@ db.getDb().then(() => {
     }
   } catch (e) {
     console.warn("Failed short answer recovery migration skipped:", e.message);
+  }
+  try {
+    const reconciled = reconcileStoredSnapshotQuizResults();
+    if (reconciled.inserted || reconciled.updated) db.saveNow();
+    if (reconciled.inserted || reconciled.updated || reconciled.snapshots) {
+      console.log(
+        `Data reconciliation: checked ${reconciled.snapshots}/${reconciled.users} snapshots, `
+        + `inserted ${reconciled.inserted} quiz results, updated ${reconciled.updated}.`
+      );
+    }
+  } catch (e) {
+    console.warn("Stored snapshot quiz reconciliation skipped:", e.message);
   }
  server.listen(port, host, () => {
     console.log(`Calculus Quest running at http://${host}:${port}/`);

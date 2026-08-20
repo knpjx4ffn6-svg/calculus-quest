@@ -146,7 +146,9 @@ document.addEventListener("click", (event) => {
       agenticActionBtn.disabled = true;
       agenticApplyDecision(type, agenticActionBtn.dataset.agenticActionKey || "").catch((error) => {
         console.warn("Agentic decision failed:", error);
-        addLog(`学习路径切换失败：${error.message || "请稍后重试"}`);
+        if (error?.code !== "navigation_failed") {
+          addLog(`学习路径切换失败：${error.message || "请稍后重试"}`);
+        }
       });
     }
     return;
@@ -222,6 +224,23 @@ document.addEventListener("click", (event) => {
         retryAiGradeButton.disabled = false;
         retryAiGradeButton.textContent = "重新批改";
       });
+    return;
+  }
+
+  const gradingRecoveryButton = event.target.closest("[data-agentic-grading-action]");
+  if (gradingRecoveryButton) {
+    const action = gradingRecoveryButton.dataset.agenticGradingAction || "retry";
+    document.querySelectorAll("[data-agentic-grading-action]").forEach((button) => {
+      button.disabled = true;
+    });
+    if (typeof agenticResolvePendingGrading === "function") {
+      agenticResolvePendingGrading(action).catch((error) => {
+        console.warn("Grading recovery failed:", error);
+        if (typeof agenticMarkGradingRecoveryAvailable === "function") {
+          agenticMarkGradingRecoveryAvailable(getUnit(), error);
+        }
+      });
+    }
     return;
   }
 

@@ -222,7 +222,7 @@ async function retryFailedShortAnswer(unitId = "", questionId = "") {
   const payload = await apiRequest("api/learning/grade", {
     unitId: unit.id,
     questions: [{ questionId }]
-  });
+  }, { timeoutMs: 12000 });
   if (Array.isArray(payload?.results) && typeof agenticApplyGradingResults === "function") {
     agenticApplyGradingResults(payload.results, unit);
   }
@@ -580,7 +580,12 @@ async function submitQuiz(unitId) {
   renderLibrary();
   window.setTimeout(function() { jumpToFeedback(unitId); }, 300);
   if ((unit.assessmentPhase === "pre" || unit.assessmentPhase === "post" || unit.assessmentPhase === "formative") && typeof agenticAfterQuizSubmit === "function") {
-    agenticAfterQuizSubmit(unit, records);
+    Promise.resolve(agenticAfterQuizSubmit(unit, records)).catch((error) => {
+      console.warn("Agentic quiz follow-up failed:", error);
+      if (typeof agenticMarkGradingRecoveryAvailable === "function") {
+        agenticMarkGradingRecoveryAvailable(unit, error);
+      }
+    });
   } else if (typeof agenticOnUnitCompleted === "function") {
     agenticOnUnitCompleted(unit);
   }

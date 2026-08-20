@@ -225,10 +225,12 @@ async function main() {
 
   const agenticSource = fs.readFileSync(path.join(__dirname, "../app/main/agentic-path.js"), "utf8");
   const eventsSource = fs.readFileSync(path.join(__dirname, "../app/main/events.js"), "utf8");
-  assert.doesNotMatch(agenticSource, /data-agentic-grading-action="retry"/);
-  assert.doesNotMatch(agenticSource, /data-agentic-grading-action="continue"/);
+  assert.match(agenticSource, /const recoveryAvailable = pending\.gradingRecoveryAvailable === true/);
+  assert.match(agenticSource, /data-agentic-grading-action="retry"/);
+  assert.match(agenticSource, /data-agentic-grading-action="continue"/);
+  assert.match(agenticSource, /recoveryAvailable\s*\?/);
   assert.match(agenticSource, /async function agenticRecoverInterruptedGrading/);
-  assert.doesNotMatch(eventsSource, /data-agentic-grading-action/);
+  assert.match(eventsSource, /data-agentic-grading-action/);
 
   await testDatabaseRecovery();
   console.log("short answer recovery tests passed");

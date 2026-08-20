@@ -939,6 +939,183 @@ function insertQuizResult(record) {
   );
 }
 
+function normalizedQuizResultResponse(value) {
+  return typeof value === "string" ? value : JSON.stringify(value ?? "");
+}
+
+function finiteQuizValue(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function incomingQuizReviewIsGraded(record = {}) {
+  const aiScore = record.ai_score ?? record.aiScore;
+  const rawErrorType = String(record.ai_error_type ?? record.aiErrorType ?? "").trim().toLowerCase();
+  const errorType = ["", "none", "no_error"].includes(rawErrorType) ? "" : rawErrorType;
+  const feedback = String(record.ai_feedback ?? record.aiFeedback ?? "").trim();
+  const status = String(record.status || "").trim().toLowerCase();
+  return finiteQuizValue(aiScore) !== null
+    || Boolean(errorType)
+    || status === "ai_reviewed"
+    || Boolean(record.fallbackScored)
+    || feedback !== "";
+}
+
+function existingQuizResultNeedsReview(row = {}) {
+  if (String(row.question_type || "").trim().toLowerCase() !== "short_answer") return false;
+  const errorType = String(row.ai_error_type || "").trim().toLowerCase();
+  const feedback = String(row.ai_feedback || "");
+  return row.status === "pending_review"
+    || Number(row.is_correct) === -1
+    || FAILED_AI_REVIEW_TYPES.includes(errorType)
+    || row.ai_score == null
+    || row.ai_confidence == null
+    || Number(row.ai_confidence) < AI_REVIEW_CONFIDENCE_THRESHOLD
+    || LEGACY_AI_REVIEW_FAILURE_PATTERNS.some((pattern) => feedback.includes(pattern));
+}
+
+function reconciledQuizResultParams(record = {}) {
+  const isCorrect = Number(record.is_correct);
+  const aiScore = finiteQuizValue(record.ai_score);
+  const aiConfidence = finiteQuizValue(record.ai_confidence);
+  return [
+    record.id,
+    record.user_id,
+    record.chapter_id || "",
+    record.chapter_label || "",
+    record.unit_id,
+    record.unit_label || "",
+    record.question_id,
+    record.question_type || "",
+    record.phase || "",
+    finiteQuizValue(record.points) ?? 0,
+    normalizedQuizResultResponse(record.response),
+    isCorrect === -1 ? -1 : isCorrect === 1 ? 1 : 0,
+    record.status || "",
+    finiteQuizValue(record.score) ?? 0,
+    finiteQuizValue(record.max_score) ?? finiteQuizValue(record.points) ?? 0,
+    Number(record.learning_generation),
+    record.created_at,
+    aiScore,
+    aiConfidence,
+    String(record.ai_feedback || "").slice(0, 4000),
+    String(record.ai_error_type || "").trim().toLowerCase()
+  ];
+}
+
+function reconcileQuizResults(records = []) {
+  const candidates = Array.isArray(records) ? records : [];
+  const d = getDbSync();
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+  const seen = new Set();
+  d.run("BEGIN IMMEDIATE");
+  try {
+    for (const record of candidates) {
+      const userId = String(record?.user_id || "").trim();
+      const generation = Number(record?.learning_generation);
+      const unitId = String(record?.unit_id || "").trim();
+      const questionId = String(record?.question_id || "").trim();
+      const id = String(record?.id || "").trim();
+      const logicalKey = `${userId}\u001f${generation}\u001f${unitId}\u001f${questionId}`;
+      if (
+        !userId
+        || !id
+        || !Number.isInteger(generation)
+        || generation < 1
+        || !unitId
+        || !questionId
+        || !record?.created_at
+        || seen.has(logicalKey)
+      ) {
+        skipped += 1;
+        continue;
+      }
+      seen.add(logicalKey);
+
+      const existing = queryOne(
+        `SELECT * FROM quiz_results
+         WHERE user_id = ? AND learning_generation = ? AND unit_id = ? AND question_id = ?
+         ORDER BY created_at ASC, id ASC LIMIT 1`,
+        [userId, generation, unitId, questionId]
+      );
+
+      // The client id is not the logical identity of a result.  Never attach a
+      // snapshot row to a different logical result just because its id collides.
+      if (!existing && queryOne("SELECT id FROM quiz_results WHERE id = ?", [id])) {
+        skipped += 1;
+        continue;
+      }
+
+      if (!existing) {
+        d.run(
+          `INSERT INTO quiz_results
+            (id, user_id, chapter_id, chapter_label, unit_id, unit_label,
+             question_id, question_type, phase, points, response, is_correct,
+             status, score, max_score, learning_generation, created_at,
+             ai_score, ai_confidence, ai_feedback, ai_error_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reconciledQuizResultParams(record)
+        );
+        inserted += 1;
+        continue;
+      }
+
+      if (
+        existingQuizResultNeedsReview(existing)
+        && String(existing.question_type || record.question_type || "").trim().toLowerCase() === "short_answer"
+        && incomingQuizReviewIsGraded(record)
+      ) {
+        const aiScore = finiteQuizValue(record.ai_score);
+        const aiConfidence = finiteQuizValue(record.ai_confidence);
+        const score = finiteQuizValue(record.score) ?? 0;
+        const isCorrect = Number(record.is_correct) === 1 ? 1 : 0;
+        const status = record.status || "ai_reviewed";
+        const feedback = String(record.ai_feedback || "").slice(0, 4000);
+        const errorType = String(record.ai_error_type || "").trim().toLowerCase();
+        const unchanged = (existing.ai_score == null ? null : Number(existing.ai_score)) === aiScore
+          && (existing.ai_confidence == null ? null : Number(existing.ai_confidence)) === aiConfidence
+          && String(existing.ai_feedback || "") === feedback
+          && String(existing.ai_error_type || "").trim().toLowerCase() === errorType
+          && Number(existing.is_correct) === isCorrect
+          && String(existing.status || "") === status
+          && (existing.score == null ? 0 : Number(existing.score)) === score;
+        if (unchanged) {
+          skipped += 1;
+          continue;
+        }
+        d.run(
+          `UPDATE quiz_results
+           SET ai_score = ?, ai_confidence = ?, ai_feedback = ?, ai_error_type = ?,
+               is_correct = ?, status = ?, score = ?
+           WHERE id = ?`,
+          [
+            aiScore,
+            aiConfidence,
+            feedback,
+            errorType,
+            isCorrect,
+            status,
+            score,
+            existing.id
+          ]
+        );
+        updated += 1;
+      } else {
+        skipped += 1;
+      }
+    }
+    d.run("COMMIT");
+  } catch (error) {
+    try { d.run("ROLLBACK"); } catch {}
+    throw error;
+  }
+  if (inserted || updated) scheduleSave();
+  return { inserted, updated, skipped, total: candidates.length };
+}
+
 function getQuizResultsByUser(userId, limit = 200) {
   const generation = currentLearningGeneration(userId);
   return queryAll(
@@ -1878,6 +2055,15 @@ function getLatestSnapshot(userId) {
      WHERE user_id = ?
      ORDER BY generation DESC, revision DESC, created_at DESC
      LIMIT 1`,
+    [userId]
+  );
+}
+
+function listLearningSnapshots(userId) {
+  return queryAll(
+    `SELECT * FROM snapshots
+     WHERE user_id = ?
+     ORDER BY generation ASC, revision ASC, created_at ASC, id ASC`,
     [userId]
   );
 }
@@ -3824,6 +4010,7 @@ module.exports = {
   revokeSession,
   currentLearningGeneration,
   insertQuizResult,
+  reconcileQuizResults,
   getQuizResultsByUser,
   getQuizResultsByUserUnit,
   getQuizResultById,
@@ -3848,6 +4035,7 @@ module.exports = {
   insertEvent,
   insertSnapshot,
   getLatestSnapshot,
+  listLearningSnapshots,
   getLearningSnapshotState,
   saveLearningSnapshot,
   resetLearningSnapshot,

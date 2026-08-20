@@ -20,7 +20,7 @@
     "katex:test": "node ops/test-katex.js",
     "db:check": "node ops/database-release-check.js",
     "active-time:test": "node ops/test-learning-time-noise.js",
-    "durability:test": "node ops/test-db-flush-durability.js && node ops/test-learning-event-durability.js && node ops/test-learning-snapshot-versioning.js",
+    "durability:test": "node ops/test-db-flush-durability.js && node ops/test-learning-event-durability.js && node ops/test-learning-snapshot-versioning.js && node ops/test-quiz-snapshot-reconciliation.js",
     "admin:test": "node ops/test-admin-statistics.js && node ops/test-admin-export-all.js && node ops/test-admin-presentation.js && node ops/test-interaction-quality.js",
     "deploy:test": "node ops/test-deployment-safety.js && node ops/test-subpath-deployment.js && node ops/test-install-run-safety.js",
     "security:test": "node ops/test-static-security.js && node ops/test-course-assessment-security.js && node ops/test-rate-limit-window.js",

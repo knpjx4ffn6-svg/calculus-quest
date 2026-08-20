@@ -269,6 +269,105 @@ reset({
   chapterId: "C1",
   unitId: "C1-k1",
   state: {
+    completed: ["C1-k1"],
+    agenticPath: {
+      unlocked: ["C1-pre", "C1-k1"],
+      visibleUnits: ["C1-pre", "C1-k1"],
+      chapterAdvanceReady: {},
+      chapterAdvanceReasons: {}
+    }
+  }
+});
+context.ensureAgenticPath();
+assert.equal(context.state.agenticPath.unlocked.includes("C1-formative"), true, "historical completion must restore the next formative unit");
+assert.equal(context.state.agenticPath.visibleUnits.includes("C1-formative"), true, "the recovered unit must remain visible in the chapter path");
+assert.equal(context.state.completed.includes("C1-formative"), false, "recovery must not mark the next unit completed");
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.agenticCompletionCta(context.getUnit("C1-k1")))),
+  { label: "复习并跳到下一节", disabled: false },
+  "a completed non-final unit must no longer be rendered as course-complete"
+);
+
+reset({
+  chapterId: "X1",
+  unitId: "X1-k1",
+  state: {
+    completed: ["X1-k1"],
+    agenticPath: {
+      unlocked: ["X1-pre", "X1-k1"],
+      visibleUnits: ["X1-pre", "X1-k1"],
+      chapterAdvanceReady: {},
+      chapterAdvanceReasons: {}
+    }
+  }
+});
+context.ensureAgenticPath();
+assert.equal(context.state.agenticPath.unlocked.includes("X1-post"), true, "extension units must use the same sequential recovery rule");
+assert.equal(context.state.completed.includes("X1-post"), false, "extension recovery must not create completion evidence");
+
+reset({
+  chapterId: "C1",
+  unitId: "C1-k1",
+  state: {
+    completed: ["C1-k1"],
+    agenticPath: {
+      unlocked: ["C1-pre", "C1-k1"],
+      visibleUnits: ["C1-pre", "C1-k1"],
+      skipped: { "C1-formative": true },
+      chapterAdvanceReady: {},
+      chapterAdvanceReasons: {}
+    }
+  }
+});
+context.ensureAgenticPath();
+assert.equal(context.state.agenticPath.unlocked.includes("C1-formative"), false, "an explicitly skipped unit must not be restored");
+assert.equal(context.state.agenticPath.unlocked.includes("C1-k2"), true, "recovery must continue to the first unskipped unit after a skip");
+
+reset({
+  chapterId: "C1",
+  unitId: "C1-k1",
+  state: {
+    completed: ["C1-k1"],
+    agenticPath: {
+      unlocked: ["C1-pre", "C1-k1"],
+      visibleUnits: ["C1-pre", "C1-k1"],
+      pendingPlan: {
+        unitId: "C1-post",
+        anchorUnitId: "C1-post",
+        chapterId: "C1",
+        phase: "post",
+        actions: [{ type: "scene", units: [{ id: "C1-formative" }] }]
+      },
+      pendingAt: "C1-post",
+      chapterAdvanceReady: {},
+      chapterAdvanceReasons: {}
+    }
+  }
+});
+context.ensureAgenticPath();
+assert.equal(context.state.agenticPath.unlocked.includes("C1-formative"), false, "a pending student choice must take priority over automatic recovery");
+
+reset({
+  chapterId: "C1",
+  unitId: "C1-post",
+  state: {
+    completed: ["C1-post"],
+    submittedQuizzes: ["C1-post"],
+    agenticPath: {
+      unlocked: ["C1-pre", "C1-post"],
+      visibleUnits: ["C1-pre", "C1-post"],
+      chapterAdvanceReady: { C1: true, "C1-post": true },
+      chapterAdvanceReasons: {}
+    }
+  }
+});
+context.ensureAgenticPath();
+assert.equal(context.state.agenticPath.unlocked.includes("C2-pre"), false, "same-chapter recovery must not unlock the next chapter");
+
+reset({
+  chapterId: "C1",
+  unitId: "C1-k1",
+  state: {
     completed: ["C1-pre", "C1-k1", "C1-formative"],
     submittedQuizzes: ["C1-pre", "C1-formative"],
     returnToQuiz: {
@@ -622,6 +721,176 @@ async function testFormativeQuizAlwaysProvidesAnExit() {
   assert.equal(context.agenticNextUnlockedUnitAfter("C1-formative")?.id, "C1-k2");
 }
 
+async function testAgenticOpenUnitReportsNavigationFailures() {
+  reset({
+    chapterId: "C1",
+    unitId: "C1-k1",
+    state: { agenticPath: { unlocked: ["C1-k1"], visibleUnits: ["C1-k1"] } }
+  });
+  const originalEnsureChapterLoaded = context.ensureChapterLoaded;
+  const originalSelectChapter = context.selectChapter;
+  const originalSelectUnit = context.selectUnit;
+  const originalRenderAll = context.renderAll;
+  let renderCount = 0;
+  context.renderAll = () => {
+    renderCount += 1;
+  };
+
+  assert.equal(await context.agenticOpenUnit("missing-unit"), false);
+  assert.equal(context.currentChapterId, "C1");
+  assert.equal(context.currentUnitId, "C1-k1");
+  assert.equal(
+    analyticsEvents.some((event) => event.eventType === "navigation_failed" && event.payload.data.reason === "unit_not_found"),
+    true,
+    "missing navigation targets must produce a diagnosable failure event"
+  );
+
+  context.ensureChapterLoaded = async () => {
+    throw new Error("manifest unavailable");
+  };
+  assert.equal(await context.agenticOpenUnit("C2-scene-1"), false);
+  assert.equal(context.currentChapterId, "C1");
+  assert.equal(context.currentUnitId, "C1-k1");
+  assert.ok(renderCount > 0, "a failed chapter load must restore the previous view");
+
+  context.ensureChapterLoaded = async () => false;
+  assert.equal(await context.agenticOpenUnit("C2-scene-1"), false);
+  assert.equal(context.currentChapterId, "C1");
+  assert.equal(context.currentUnitId, "C1-k1");
+  assert.equal(
+    analyticsEvents.some((event) => event.eventType === "navigation_failed" && event.payload.data.reason === "chapter_load_rejected"),
+    true,
+    "an explicit false chapter-load result must stop navigation"
+  );
+
+  context.ensureChapterLoaded = async () => {};
+  context.selectChapter = async (chapterId) => {
+    context.currentChapterId = chapterId;
+    return false;
+  };
+  context.selectUnit = originalSelectUnit;
+  assert.equal(await context.agenticOpenUnit("C2-k1"), false);
+  assert.equal(context.currentChapterId, "C1");
+  assert.equal(context.currentUnitId, "C1-k1");
+  assert.equal(
+    analyticsEvents.some((event) => event.eventType === "navigation_failed" && event.payload.data.reason === "chapter_selection_rejected"),
+    true,
+    "a rejected chapter selection must be observable"
+  );
+
+  context.selectChapter = originalSelectChapter;
+  context.selectUnit = () => false;
+  assert.equal(await context.agenticOpenUnit("C2-k1"), false);
+  assert.equal(context.currentChapterId, "C1");
+  assert.equal(context.currentUnitId, "C1-k1");
+
+  context.selectChapter = originalSelectChapter;
+  context.selectUnit = originalSelectUnit;
+  context.ensureChapterLoaded = originalEnsureChapterLoaded;
+  context.renderAll = originalRenderAll;
+}
+
+async function testDecisionRestoresPendingPlanWhenNavigationFails() {
+  resetPostChoiceFlow();
+  const originalSelectUnit = context.selectUnit;
+  context.selectUnit = () => false;
+  await assert.rejects(
+    () => context.agenticApplyDecision("continue"),
+    (error) => error?.code === "navigation_failed"
+  );
+  assert.equal(context.currentChapterId, "C1");
+  assert.equal(context.currentUnitId, "C1-post");
+  assert.equal(context.state.agenticPath.pendingPlan?.unitId, "C1-post");
+  assert.equal(context.state.agenticPath.decisionInFlight, "");
+  context.selectUnit = originalSelectUnit;
+}
+
+async function testAgenticPlanUsesRequestTimeout() {
+  const originalIsSignedIn = context.isSignedIn;
+  const originalApiRequest = context.apiRequest;
+  const originalInteractionEvidenceForUnit = context.interactionEvidenceForUnit;
+  const originalInteractionEvidenceForChapter = context.interactionEvidenceForChapter;
+  const originalQuizQuestionsForPlan = context.agenticQuizQuestionsForPlan;
+  let observedTimeout = 0;
+  context.isSignedIn = () => true;
+  context.interactionEvidenceForUnit = () => null;
+  context.interactionEvidenceForChapter = () => [];
+  context.agenticQuizQuestionsForPlan = () => [];
+  context.apiRequest = async (_path, _body, options) => {
+    observedTimeout = options?.timeoutMs || 0;
+    throw new Error("request_timeout");
+  };
+  const result = await context.agenticRequestPlan(context.getUnit("C1-formative"), []);
+  assert.equal(result, null);
+  assert.equal(observedTimeout, 12000);
+  context.isSignedIn = originalIsSignedIn;
+  context.apiRequest = originalApiRequest;
+  context.interactionEvidenceForUnit = originalInteractionEvidenceForUnit;
+  context.interactionEvidenceForChapter = originalInteractionEvidenceForChapter;
+  context.agenticQuizQuestionsForPlan = originalQuizQuestionsForPlan;
+}
+
+async function testSelectChapterFailureRestoresView() {
+  let renderCount = 0;
+  const navigationContext = vm.createContext({
+    console,
+    currentView: "learn",
+    currentChapterId: "C1",
+    currentUnitId: "C1-k1",
+    validViews: new Set(["home", "learn"]),
+    state: {
+      logs: [],
+      returnToQuiz: { unitId: "C1-pre", targetUnitId: "C1-k1", questionId: "q1" }
+    },
+    curriculum: [
+      { id: "C1", label: "第一章", loaded: true, units: [unit("C1-k1", "C1", 1)] },
+      { id: "C2", label: "第二章", loaded: false, units: [unit("C2-k1", "C2", 1)] }
+    ],
+    getChapter(id) {
+      return navigationContext.curriculum.find((chapter) => chapter.id === id) || null;
+    },
+    getUnit(id) {
+      return navigationContext.curriculum.flatMap((chapter) => chapter.units).find((item) => item.id === id) || null;
+    },
+    analyticsTrack: () => {},
+    trackLearningEvent: () => {},
+    saveState: () => {},
+    renderAll: () => { renderCount += 1; },
+    preloadChapterResources: () => {},
+    agenticGuardNavigation: () => true,
+    analyticsEnterUnit: () => {},
+    renderAuth: () => {},
+    renderMetrics: () => {},
+    renderChapters: () => {},
+    renderLessons: () => { renderCount += 1; },
+    renderPlayer: () => {},
+    renderLibrary: () => {},
+    renderProgress: () => {},
+    document: { querySelector: () => null, querySelectorAll: () => [] },
+    window: {
+      scrollTo: () => {},
+      dispatchEvent: () => {}
+    },
+    CustomEvent: class CustomEvent {
+      constructor(type, options) {
+        this.type = type;
+        this.detail = options?.detail;
+      }
+    },
+    ensureChapterLoaded: async () => false
+  });
+  vm.runInContext(navigationSource, navigationContext, { filename: "app/main/navigation.js" });
+  assert.equal(await navigationContext.selectChapter("C2"), false);
+  assert.equal(navigationContext.currentChapterId, "C1");
+  assert.equal(navigationContext.currentUnitId, "C1-k1");
+  assert.deepEqual(navigationContext.state.returnToQuiz, {
+    unitId: "C1-pre",
+    targetUnitId: "C1-k1",
+    questionId: "q1"
+  });
+  assert.ok(renderCount >= 2, "chapter load failure must render both loading and restored views");
+}
+
 async function testPreviewRefreshDoesNotUnlockFutureChapter() {
   const initStart = bootstrapSource.indexOf("async function init()");
   const initEnd = bootstrapSource.lastIndexOf("\ninit();");
@@ -743,11 +1012,15 @@ Promise.resolve()
   .then(testDirectExtensionPostReturnsToMainRoute)
   .then(testQuizReviewReadySignalWaitsForAllScoring)
   .then(testFormativeQuizAlwaysProvidesAnExit)
+  .then(testAgenticOpenUnitReportsNavigationFailures)
+  .then(testDecisionRestoresPendingPlanWhenNavigationFails)
+  .then(testAgenticPlanUsesRequestTimeout)
   .then(async () => {
     const failures = [];
     for (const test of [
       testSideNavigationClearsQuizReturnContext,
-      testPreviewRefreshDoesNotUnlockFutureChapter
+      testPreviewRefreshDoesNotUnlockFutureChapter,
+      testSelectChapterFailureRestoresView
     ]) {
       try {
         await test();

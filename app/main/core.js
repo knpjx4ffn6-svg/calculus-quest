@@ -698,6 +698,11 @@ async function apiRequest(path, body = {}, options = {}) {
 
 function learningSnapshot() {
   return {
+    courseAssessmentFingerprint: String(
+      typeof multiSceneLearningRoute !== "undefined"
+        ? multiSceneLearningRoute?.courseAssessmentFingerprint || ""
+        : ""
+    ).trim(),
     participant: state.participant,
     completed: state.completed || [],
     quizResults: state.quizResults || [],
